@@ -1,0 +1,866 @@
+﻿+--------------------+
+                        |        CS 333      |
+                        | PROJECT 1: THREADS |
+                        |   DESIGN DOCUMENT  |
+                        +--------------------+
+                                   
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+Alaa Shehab <alaa.shehab.95@gmail.com>
+Bassant Ahmed <bassant.ahmed127@gmail.com>
+Hanan Elkhateeb <samirhanan32@gmail.com>
+Sohayla Mohammed <sohaylamohammed734@gmail.com>
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+                              ALARM CLOCK
+                            ===========
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+Added to struct thread:
+
+1- int64_t sleepingTime
+The amount of time that the thread should be asleep for
+Added in thread.h as a variable in each thread struct
+
+2- static struct list sleep_list
+An ordered list in which the sleeping threads are stored, in ascending order.
+
+
+---- ALGORITHMS ----
+
+>> A2: Briefly describe what happens in a call to timer_sleep(),
+>> including the effects of the timer interrupt handler.
+
+1-In a call to timer_sleep() :
+Steps from c->e are done in void thread_sleep(int64_t sleepingTime) in thread.c
+which is called by timer_sleep()
+
+a. Assert that interrupts are on.
+b. Check if ticks that represents the amount of sleeping time is actually greater than 0
+otherwise return.
+c. Disable interrupts, then set the current thread's sleepingTime with 'ticks' + timer_ticks().
+d. Insert the thread in the sleep_list in an ascending ordered manner.
+e. Block the current thread, and enable the interrupts again. 
+
+2- In timer interrupt handler :
+This is all done in void thread_wakeup(int64_t current_ticks) which is called by thread_tick()
+
+a. Loop over the sleep_list
+b. For Each element in the thread
+   -check if it has passed its sleeping time.
+        -if yes, remove it from the sleep_list, and unblock it.
+        -if no, end the loop, as all the following threads in the list, if there are any,
+         will have a sleepingTime greater than the current held one
+as the list is ordered in an ascending manner.
+
+
+>> A3: What steps are taken to minimize the amount of time spent in
+>> the timer interrupt handler?
+
+- By ordering the threads in the sleep_list
+- The OS doesn't iterate over the whole sleep_list in the waking up process
+- The moment it finds a thread with sleepingTime > current_ticks it terminates iterating.
+- There's an overhead of O(k) insertion for each thread
+k is 0,1,....,n where n is the number of threads at a time
+summation of O(k) would be 0+1+2+...+n = n(n+1)/2.
+It's still better than the overhead of busy_waiting
+the whole sleeping ticks for each thread.
+
+
+---- SYNCHRONIZATION ----
+
+>> A4: How are race conditions avoided when multiple threads call
+>> timer_sleep() simultaneously?
+
+- An interrupt disable is issued before the setting of each thread's sleepingTime
+- insertion in sleep_list and blocking.
+
+>> A5: How are race conditions avoided when a timer interrupt occurs
+>> during a call to timer_sleep()?
+
+- An interrupt disable was issued during the process.
+
+---- RATIONALE ----
+
+>> A6: Why did you choose this design?  In what ways is it superior to
+>> another design you considered?
+
+- By using the sleep_list we optimized the overhead of waiting for each thread entire ticks each time a thread wants to sleep, since each tick is about  0.01 seconds.
+
+- Sorting the sleep_list takes an overhead of O(k) for each thread
+- but for it'll stop from iterating over the entire sleep_list during waking up,
+- also for a large 'n' the insertion overhead would be more optimal than busy waiting.
+
+                        PRIORITY SCHEDULING
+                        ===================
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+1- Added to struct lock
+a- since we're adding the lock into a list
+- struct list_elem lock_elem;             
+- holds the priority of the thread with highest priority that acquires the lock
+- initialized to -1
+b-int max_priority;
+
+2- Added to struct thread:
+a- int original_priority
+- unchangeable value to keep track of the original priority
+- Used to check if a donation has occurred
+              
+b- struct list locks_held
+- A list of all the locks held by the thread
+- ordered in a descending manner from the lock
+-the lowest max_priority to the lock with the highest
+
+c- struct lock *locked_by  
+- holds a pointer to a lock that a thread is blocked on
+- NULL otherwise
+
+
+3- Added in synch.c:
+Maximum number of levels in nested donations
+#define MAXDEPTH 8
+
+
+>> B2: Explain the data structure used to track priority donation.
+>> Use ASCII art to diagram a nested donation.  (Alternately, submit a
+>> .png file.)
+
+- Every time a lock is acquired by a thread following happens:
+- If the lock is held by another thread the locked_by is set to the lock
+- Then max_priority of the lock is compared with the current thread's priority
+- If it's lower, then donation occurs and the max_priority of the lock is set
+to the current thread priority
+- Then a nested donations loop is entered.
+- if the lock is not held or the thread is signaled,the lock is added to the locks_held list of the thread
+- the max_priority of the lock is set to the lock's max_priority.
+
+In a single donation:
+- when the lock is being acquired, the lock's max_priority is checked,
+- If it’s lower than the one who is acquiring lock, donation happens.
+
+In nested donation:
+- The current thread donates its priority to the lock holder,
+- Check if the lock holder is blocked on another lock using locked_by
+- If yes then a donation happen
+- Continue the same mechanism for each donee thread
+- Until reaching a thread that is not blocked on any lock or we reach a max depth.
+
+In multiple donations:
+- Donating the priorities is done in the same manner
+- But the running thread's priority will be set to the last held lock
+- After releasing a lock it check if there exists any other lock in its locks_held
+List
+- If it has a higher max_priority than its original_priority
+- then take the one with the highest max_prioirty from the list
+- And donation has occured from a thread waiting on this lock,
+-  set priority to this lock max_priority
+- other wise its priority is set to its original_priority.  
+
+So using the data structures above:
+- single, multiple and nested donations are achieved successfully.
+
+
+single donation :
+Thread A priority 20, holds lock l_1. 
+Thread B priority 25, acquires lock l_1. 
+
+A acquires l_1:
+==========================
+.---------------------------------------------------.
+|                Thread A (A aqiures l_1)           |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            20 |
+| original_priority |                            20 |
+| locks_held        | {l_1}                         |
+| locke_by          | NULL                          |
+'-------------------+-------------------------------'
+
+.---------------------------------------------------.
+|                Lock l_1 (A aqiures l_1)           |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| max_priority      |                            20 |
+| holder            |                            A  |
+| semaphore         | value-> 0                     |
+|                   | waiters->{}                   |
+'-------------------+-------------------------------'
+
+B acquires l_1:
+==========================
+.---------------------------------------------------.
+|                Thread B (B acquires l_1)           |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            25 |
+| priority_original |                            25 |
+| locks_held        | {}                            |
+| lock_blocked_by   | l_1                           |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Thread A (B acquires l_1)           |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            25 |
+| original_priority |                            20 |
+| locks_held        | {l_1}                         |
+| locked_by          | NULL                         |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Lock l_1 (B acquires l_1)           |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| max_priority      |                            25 |
+| holder            |                            A  |
+| semaphore         | value-> -1                    |
+|                   | waiters->{B}                  |
+'-------------------+-------------------------------'
+==================================================================
+STEP 4: A releases l_1:
+==========================
+.---------------------------------------------------.
+|                Thread B (B acquires l_1)           |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            25 |
+| priority_original |                            25 |
+| locks_held        | {l_1}                         |
+| lock_blocked_by   | NULL                          |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Thread A (B acquires l_1)           |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            20 |
+| original_priority |                            20 |
+| locks_held        | {}                            |
+| locked_by          | NULL                         |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Lock l_1 (B acquires l_1)           |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| max_priority      |                            25 |
+| holder            |                            B  |
+| semaphore         | value-> 0                     |
+|                   | waiters->{}                   |
+'-------------------+-------------------------------'
+==================================================================
+
+nested donations:
+Thread A priority 10, holds lock l_1, waiting on l_2. 
+Thread B priority 25, acquires lock l_1. 
+Thread C priority 15, holds lock l_2, waiting on l_3. 
+Thread D priority 20, holds lock l_3.
+
+STARTING POINT
+==========================
+.---------------------------------------------------.
+|                Thread A (STARTING POINT)          |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            10 |
+| original_priority |                            10 |
+| locks_held        | {l_1}                         |
+| locked_by         | l_2                           |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Thread B (STARTING POINT)          |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            25 |
+| original_priority |                            25 |
+| locks_held        | {}                            |
+| locked_by         | NULL                          |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Thread c (STARTING POINT)          |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            15 |
+| original_priority |                            15 |
+| locks_held        | {l_2}                         |
+| locked_by         | l_3                           |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Thread D (STARTING POINT)          |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            20 |
+| original_priority |                            20 |
+| locks_held        | {l_3}                         |
+| locked_by         | NULL                          |
+'-------------------+-------------------------------'
+
+.---------------------------------------------------.
+|                Lock l_1 (STARTING POINT)          |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| max_priority      |                            10 |
+| holder            |                            A  |
+| semaphore         | value-> 0                     |
+|                   | waiters->{}                   |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Lock l_2 (STARTING POINT)          |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| max_priority      |                            15 |
+| holder            |                            C  |
+| semaphore         | value-> -1                    |
+|                   | waiters->{A}                  |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Lock l_3 (STARTING POINT)          |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| max_priority      |                            20 |
+| holder            |                            D  |
+| semaphore         | value-> -1                    |
+|                   | waiters->{C}                  |
+'-------------------+-------------------------------'
+
+B acquires l_1->first donation:
+==========================
+.---------------------------------------------------.
+|                Thread A (B acquires               |
+|                     l_1->first donation)          |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            25 |
+| original_priority |                            10 |
+| locks_held        | {l_1}                         |
+| locked_by         | l_2                           |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Thread (B acquires                 |
+|                     l_1->first donation)          |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            25 |
+| original_priority |                            25 |
+| locks_held        | {}                            |
+| locked_by         | l_1                           |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Thread c (B acquires               |
+|                     l_1->first donation)          |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            15 |
+| original_priority |                            15 |
+| locks_held        | {l_2}                         |
+| locked_by         | l_3                           |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Thread D (B acquires               |
+|                     l_1->first donation)          |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            20 |
+| original_priority |                            20 |
+| locks_held        | {l_3}                         |
+| locked_by         | NULL                          |
+'-------------------+-------------------------------'
+
+.---------------------------------------------------.
+|                Lock l_1 (B acquires               |
+|                     l_1->first donation)          |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| max_priority      |                            25 |
+| holder            |                            A  |
+| semaphore         | value-> -1                    |
+|                   | waiters->{B}                  |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Lock l_2 (B acquires               |
+|                     l_1->first donation)          |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| max_priority      |                            15 |
+| holder            |                            C  |
+| semaphore         | value-> -1                    |
+|                   | waiters->{A}                  |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Lock l_3 (B acquires               |
+|                     l_1->first donation)          |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| max_priority      |                            20 |
+| holder            |                            D  |
+| semaphore         | value-> -1                    |
+|                   | waiters->{C}                  |
+'-------------------+-------------------------------'
+==================================================================
+B acquires l_1->2nd/3rd donation:
+==========================
+.---------------------------------------------------.
+|                Thread A (B acquires               |
+|                     l_1->2nd/3rd donation)        |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            25 |
+| original_priority |                            10 |
+| locks_held        | {l_1}                         |
+| locked_by         | l_2                           |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Thread B (B acquires               |
+|                     l_1->2nd/3rd donation)        |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            25 |
+| original_priority |                            25 |
+| locks_held        | {}                            |
+| locked_by         | l_1                           |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Thread c (B acquires               |
+|                     l_1->2nd/3rd  donation)       |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            25 |
+| original_priority |                            15 |
+| locks_held        | {l_2}                         |
+| locked_by         | l_3                           |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Thread D (B acquires               |
+|                     l_1->2nd/3rd  donation)       |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            25 |
+| original_priority |                            20 |
+| locks_held        | {l_3}                         |
+| locked_by         | NULL                          |
+'-------------------+-------------------------------'
+
+.---------------------------------------------------.
+|                Lock l_1 (B acquires               |
+|                     l_1->2nd/3rd donation)        |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| max_priority      |                            25 |
+| holder            |                            A  |
+| semaphore         | value-> -1                    |
+|                   | waiters->{B}                  |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Lock l_2 (B acquires               |
+|                     l_1->2nd/3rd donation)        |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| max_priority      |                            25 |
+| holder            |                            C  |
+| semaphore         | value-> -1                    |
+|                   | waiters->{A}                  |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Lock l_3 (B acquires               |
+|                     l_1->2nd/3rd  donation)       |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| max_priority      |                            25 |
+| holder            |                            D  |
+| semaphore         | value-> -1                    |
+|                   | waiters->{C}                  |
+'-------------------+-------------------------------'
+=================================================================
+D releases l_3:
+==========================
+.---------------------------------------------------.
+|                Thread A (D releases l_3)          |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            25 |
+| original_priority |                            10 |
+| locks_held        | {l_1}                         |
+| locked_by         | l_2                           |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Thread B (D releases l_3)          |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            25 |
+| original_priority |                            25 |
+| locks_held        | {}                            |
+| locked_by         | l_1                           |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Thread C (D releases l_3)          |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            25 |
+| original_priority |                            15 |
+| locks_held        | {l_2, l_3}                    |
+| locked_by         | NULL                          |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Thread D (D releases l_3)          |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            20 |
+| original_priority |                            20 |
+| locks_held        | {}                            |
+| locked_by         | NULL                          |
+'-------------------+-------------------------------'
+
+.---------------------------------------------------.
+|                Lock l_1 (D releases l_3)          |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| max_priority      |                            25 |
+| holder            |                            A  |
+| semaphore         | value-> -1                    |
+|                   | waiters->{B}                  |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Lock l_2 (D releases l_3)          |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| max_priority      |                            25 |
+| holder            |                            C  |
+| semaphore         | value-> -1                    |
+|                   | waiters->{A}                  |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Lock l_3 (D releases l_3)          |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| max_priority      |                            25 |
+| holder            |                             C |
+| semaphore         | value-> 0                     |
+|                   | waiters->{}                   |
+'-------------------+-------------------------------'
+==================================================================
+C releases l_3 and l_2:
+==========================
+.---------------------------------------------------.
+|                Thread A (C releases l_3&l_2)      |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            25 |
+| original_priority |                            10 |
+| locks_held        | {l_1, l_2}                    |
+| locked_by         | NULL                          |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Thread B (C releases l_3&l_2)      |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            25 |
+| original_priority |                            25 |
+| locks_held        | {}                            |
+| locked_by         | l_1                           |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Thread C (C releases l_3&l_2)      |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            15 |
+| original_priority |                            15 |
+| locks_held        | {}                            |
+| locked_by         | NULL                          |
+'-------------------+-------------------------------'
+
+.---------------------------------------------------.
+|                Lock l_1 (C releases l_3&l_2)      |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| max_priority      |                            25 |
+| holder            |                            A  |
+| semaphore         | value-> -1                    |
+|                   | waiters->{B}                  |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Lock l_2 (C releases l_3&l_2)      |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| max_priority      |                            25 |
+| holder            |                            A  |
+| semaphore         | value-> 0                     |
+|                   | waiters->{}                   |
+'-------------------+-------------------------------'
+============================================================================
+A releases l_2 and l_1:
+==========================
+.---------------------------------------------------.
+|                Thread A (A releases l_2&l_1)      |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            10 |
+| original_priority |                            10 |
+| locks_held        | {}                            |
+| locked_by         | NULL                          |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Thread B (A releases l_2&l_1)      |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            25 |
+| original_priority |                            25 |
+| locks_held        | {l_1}                         |
+| locked_by         | NULL                          |
+'-------------------+-------------------------------'
+.---------------------------------------------------.
+|                Lock l_1 (A releases l_2&l_1)      |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| max_priority      |                            25 |
+| holder            |                            B  |
+| semaphore         | value-> 0                     |
+|                   | waiters->{}                   |
+'-------------------+-------------------------------'
+======================================================================
+B releases l_1:
+==========================
+.---------------------------------------------------.
+|                Thread B (B releases l_1)          |
++-------------------+-------------------------------+
+| member            | value                         |
++-------------------+-------------------------------+
+| priority          |                            25 |
+| original_priority |                            25 |
+| locks_held        | {}                            |
+| locked_by         | NULL                          |
+'-------------------+-------------------------------'
+
+
+
+---- ALGORITHMS ----
+
+>> B3: How do you ensure that the highest priority thread waiting for
+>> a lock, semaphore, or condition variable wakes up first?
+A: by sorting the waiters list before each signal or sema up
+- Sorting is in descending order
+
+
+>> B4: Describe the sequence of events when a call to lock_acquire()
+>> causes a priority donation.  How is nested donation handled?
+A: Steps:
+  1. Disable interrupts
+  2. If the lock is held by another thread, first priority scheme is used.
+      - if yes
+          - set locked_by in current thread with the lock.
+          - Make a temporary lock 'l' with value of the sent lock value.
+          - Enter a while loop with conditions satisfied
+  - Donation occurs, 
+             l->max_priority is set to current thread priority
+    depth is decremented and 'l' is equal to 
+            l->holder->locked_by
+          - By using this we achieved single donation and nested donations if it occurs.
+         - The donate function sets the l->holder priority with the current thread priority.
+  3. check_donation() is issued to see if there exist a thread in ready list with priority higher than
+     the running thread.
+  4. thread waits on semaphore.
+  5. when sema_up() is issued thread->locked_by is set to NULL and the lock is added to the thread's 
+     locks_held list.
+
+>> B5: Describe the sequence of events when lock_release() is called
+>> on a lock that a higher-priority thread is waiting for.
+A: Steps:
+  1. Disable interrupts.
+  2. remove the lock from the current thread's locks_held list.
+  3. Release donation :
+        - set a temporary int element 'a' with the thread's original_priority.
+        - Check if multiple donations occurs:
+                a- check if the thread's locks_held is empty or not.
+                b- if yes, sort the list of locks by the max_priority.
+                c- Take the lock with highest max_priority.
+                d- if it's max_priority > 'a', then there exist a thread waiting on this thread
+                e-Then set a to donated value.
+        - set the current thread's priority with 'a'.
+  4. set the lock->holder with NULL
+   5. Issue a sema_up() to the highest priority thread waiting on the
+     lock.
+
+---- SYNCHRONIZATION ----
+
+>> B6: Describe a potential race in thread_set_priority() and explain
+>> how your implementation avoids it.  Can you use a lock to avoid
+>> this race?
+
+A: During donation:
+- The lock->holder’s priority may be set by the donor,
+- Simultaneously threat_set_priority() is called on lock->holder.
+- Setting the priority in a different order, may cause a different result
+- so we disable the interrupts to prevent it happens.
+- A lock may be used since the donate() function and set function are both in thread.c
+
+---- RATIONALE ----
+
+>> B7: Why did you choose this design?  In what ways is it superior to
+>> another design you considered?
+
+- The design is simple
+- Easy to implements
+- Avoids races and performs both nested and single donations.
+- It maintains the threads’ original priorities at the end 
+- Maintains the threads’ synchronization through disabling the interrupts
+- Allow maximum parallelism.
+- keeps all thread related operation within thread.c for readability.
+Some other designs:
+- Didn’t fully maintain the thread’s priority at the end of the donation cycles
+- Others gave an overhead of adding all threads in the donation cycles to an additional list in each thread to keep track of the donee.
+
+                     ADVANCED SCHEDULER
+                          ==================
+
+---- DATA STRUCTURES ----
+
+>> C1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+* Added a new header file fixed_point.h, defined a new type called
+            fixed_point which is used for fixed point calculation.
+* In thread.h, added new variables in thread struct for calculating priority of threads:
+Int niceValue;
+fixed_point recent_cpu;
+* In thread.c, added global variable for all threads :
+            fixed_point load_avg; 
+
+---- ALGORITHMS ----
+
+>> C2: Suppose threads A, B, and C have nice values 0, 1, and 2.  Each
+>> has a recent_cpu value of 0.  Fill in the table below showing the
+>> scheduling decision and the priority and recent_cpu values for each
+>> thread after each given number of timer ticks:
+   * Load_avg = (59/60)*load_avg+(1/60)*ready_threads ----->re-calculated every second (100 ticks)
+   * recent_cpu = (2*load_avg)/(2*load_avg + 1) *recent_cpu + nice --> incremented every tick for the current thread, re-calculated every second (100 ticks) for ALL threads.
+   * priority   = PRI_MAX - (recent_cpu/4) - (nice*2)-----> re-calculated every 4 ticks for ALL threads
+   * load_avg  = 0
+   * ready_threads = 3
+
+timer   recent_cpu       priority   thread
+ticks           A   B   C       A   B   C   to run
+ --             --   --   --       --   --   --    ---------
+ 0          0   1    2       63  61  59     A
+ 4          4    1   2       62  61  59     A
+8      8    1   2        61   61  59    B
+12    8    5   2        61   60   59   A
+16    12  5   2        60   60   59   B
+20     12  9  2        60   59  59   A
+24    16  9   2        59   59  59   C
+28     16 9   6        59   59  58   B
+32    16  13  6      59   58   58   A
+36    20  13  6      58   58   58   C
+
+>> C3: Did any ambiguities in the scheduler specification make values
+>> in the table uncertain?  If so, what rule did you use to resolve
+>> them?  Does this match the behavior of your scheduler?
+   * Ambiguities are mainly in the area of deciding values in the table, for example, we don’t consider values like load_avg, recent_cpu, as well as priorities for each threads. In that case, we assume that each time slice is 4 ticks, thus we will add 4 ticks to recent_cpu for every 4 ticks.
+   * Also, at certain times, multiple threads shall have the same priority.In this case, the scheduler picks the very thread that has been run the least recently.
+
+>> C4: How is the way you divided the cost of scheduling between code
+>> inside and outside interrupt context likely to affect performance?
+In our design, updating statistics and priorities happens in an interrupt context. The only thing that happens outside the interrupt context is choosing another thread to run which usually doesn’t take much time. This design guarantees that the scheduler doesn’t take a lot of the cpu (threads) time. Also,  inside the interrupt context we update the priority only when the load average is updated since the recent cpu time depends on it and the priority depends on the recent cpu. This implementation reduces the time spent in timer interrupt which improves performance.
+---- RATIONALE ----
+
+>> C5: Briefly critique your design, pointing out advantages and
+>> disadvantages in your design choices.  If you were to have extra
+>> time to work on this part of the project, how might you choose to
+>> refine or improve your design?
+   * Advantages : Only added a few extra variables, which makes it easier to modify.
+   * Disadvantages : Since the advanced scheduler chooses the thread to run based on priorities and doesn’t support donation, there are some cases in which the highest priority process will have to wait for another less priority process to finish its work.
+
+>> C6: The assignment explains arithmetic for fixed-point math in
+>> detail, but it leaves it open to you to implement it.  Why did you
+>> decide to implement it the way you did?  If you created an
+>> abstraction layer for fixed-point math, that is, an abstract data
+>> type and/or a set of functions or macros to manipulate fixed-point
+>> numbers, why did you do so?  If not, why not?
+Fixed-point math is implemented in a separate header file. Fixed-point math
+provides a small, fast alternative to floating-point numbers in situations
+where small rounding errors are acceptable. The reason to implement it in
+header file is that the functions in it,is used during implementation for calculating priority
+of threads in thread.c class, so to make it easy to call those functions, we created a separated header file.
+
+                           SURVEY QUESTIONS
+                           ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future quarters or the remaining projects?
+
+>> Any other comments?
